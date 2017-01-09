@@ -17,7 +17,6 @@
  */
  
 import groovy.time.* 
-import java.util.concurrent.TimeUnit
  
 definition(
     name: "Laundry Monitor",
@@ -98,7 +97,7 @@ def powerInputHandler(evt) {
                 log.trace "Hit low-power for first time after high-power: ${atomicState}"
 
                 // Schedule callback for minimumOffTime from now to check if power has been low for long enough
-                checkDoneIn(TimeUnit.MINUTES.toSeconds(minimumOffTime));
+                checkDoneIn(minimumOffTime * 60);
             }
         } else if (atomicState.lastLowTime != null) { // Power is above minimum, reset any pending low atomicState
             log.trace "Hit high-power for first time after low-power: ${atomicState}"
@@ -116,20 +115,20 @@ def checkIfDone() {
     if (atomicState.startedAt != null) { // Currently Running
         if (atomicState.lastLowTime != null) {  // there is a low power event
             def lastLowDeltaMillis = (now() - atomicState.lastLowTime)
-            def minOffTimeMillis = TimeUnit.MINUTES.toMillis(minimumOffTime)
+            def minOffTimeMillis = minimumOffTime * 60 * 1000
             log.trace "LowLongEnoughCheck: ${lastLowDeltaMillis} >= ${minOffTimeMillis}"
 
             if (lastLowDeltaMillis >= minOffTimeMillis) { // Power has been low for long enough, end the cycle
                 log.trace "Still running and low time is is longer than minimumOffTime"
                 endCycle()
             } else { // Has a low time but isn't done yet, re-schedule another check for the future
-                def reSchedTime = TimeUnit.MILLISECONDS.toSeconds(minOffTimeMillis - lastLowDeltaMillis)
+                def reSchedTime = (minOffTimeMillis - lastLowDeltaMillis) / 1000
                 log.trace "Re-Scheduling checkIfDone in ${reSchedTime} seconds"
                 checkDoneIn(reSchedTime);
             }
         } else { // No low power event
             def lastUpdateDeltaMillis = (now() - atomicState.latestUpdate)
-            def maxGapMillis = TimeUnit.MINUTES.toMillis(maximumUpdateGap)
+            def maxGapMillis = maximumUpdateGap * 60 * 1000
             log.trace "RecentUpdateCheck: ${lastUpdateDeltaMillis} >= ${maxGapMillis}"
 
         	if (lastUpdateDeltaMillis < maxGapMillis) { // it has been too long since an update
