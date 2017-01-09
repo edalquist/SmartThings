@@ -75,67 +75,87 @@ def checkDoneIn(delayInSeconds) {
 	runIn(delayInSeconds + 2, checkIfDone);
 }
 
+def getStateMap(atSt) {
+	def stateMap = atSt.stateMap
+    if (stateMap == null) {
+	    stateMap = [:]
+    }
+    return stateMap
+}
+
 def powerInputHandler(evt) {
-    atomicState.latestPower = sensor1.currentValue("power")
-    atomicState.latestUpdate = now()
-    log.trace "State: ${atomicState}"
+	def stateMap = getStateMap(atomicState)
+    try {
+        stateMap.latestPower = sensor1.currentValue("power")
+        stateMap.latestUpdate = now()
+        log.trace "State: ${stateMap}"
 
-    if (atomicState.startedAt == null) { // Not currently Running
-        if (atomicState.latestPower >= minimumWattage) { // Power is above minimum
-            // Start the cycle!
-            atomicState.startedAt = atomicState.latestUpdate
-            atomicState.lastLowTime = null
-            log.info "Starting Cycle: ${message}"
-            log.trace "Starting Cycle: ${atomicState}"
-        }
-        // else, power is below minimum, we can just ignore it
-    } else { // Currently Running!
-        if (atomicState.latestPower < minimumWattage) { // Power is below minimum, maybe done?
-            if (atomicState.lastLowTime == null) { // Haven't seen a low since the last high
-                // Record the time the low power was observed
-                atomicState.lastLowTime = atomicState.latestUpdate
-                log.trace "Hit low-power for first time after high-power: ${atomicState}"
-
-                // Schedule callback for minimumOffTime from now to check if power has been low for long enough
-                checkDoneIn(minimumOffTime * 60);
+        if (stateMap.startedAt == null) { // Not currently Running
+            if (stateMap.latestPower >= minimumWattage) { // Power is above minimum
+                // Start the cycle!
+                stateMap.startedAt = stateMap.latestUpdate
+                stateMap.remove('lastLowTime')
+                log.info "Starting Cycle: ${message}"
+                log.trace "Starting Cycle: ${stateMap}"
             }
-        } else if (atomicState.lastLowTime != null) { // Power is above minimum, reset any pending low atomicState
-            log.trace "Hit high-power for first time after low-power: ${atomicState}"
+            // else, power is below minimum, we can just ignore it
+        } else { // Currently Running!
+            if (stateMap.latestPower < minimumWattage) { // Power is below minimum, maybe done?
+                if (stateMap.lastLowTime == null) { // Haven't seen a low since the last high
+                    // Record the time the low power was observed
+                    stateMap.lastLowTime = stateMap.latestUpdate
+                    log.trace "Hit low-power for first time after high-power: ${stateMap}"
 
-            // Power usage is above minimum, clear lastLowTime
-            atomicState.lastLowTime = null
+                    // Schedule callback for minimumOffTime from now to check if power has been low for long enough
+                    checkDoneIn(minimumOffTime * 60);
+                }
+            } else if (stateMap.lastLowTime != null) { // Power is above minimum, reset any pending low state
+                log.trace "Hit high-power for first time after low-power: ${stateMap}"
+
+                // Power usage is above minimum, clear lastLowTime
+                stateMap.remove('lastLowTime')
+            }
         }
+    } finally {
+    	atomicState.stateMap = stateMap
     }
 }
 
 // Called every 5min and after a min power event is detected
 def checkIfDone() {
-    log.trace "CheckIfDone: ${atomicState}"
+	def stateMap = getStateMap(atomicState)
+    try {
+        log.trace "CheckIfDone: ${stateMap}"
 
-    if (atomicState.startedAt != null) { // Currently Running
-        if (atomicState.lastLowTime != null) {  // there is a low power event
-            def lastLowDeltaMillis = (now() - atomicState.lastLowTime)
-            def minOffTimeMillis = minimumOffTime * 60 * 1000
-            log.trace "LowLongEnoughCheck: ${lastLowDeltaMillis} >= ${minOffTimeMillis}"
+        if (stateMap.startedAt != null) { // Currently Running
+            if (stateMap.lastLowTime != null) {  // there is a low power event
+                def lastLowDeltaMillis = (now() - stateMap.lastLowTime)
+                def minOffTimeMillis = minimumOffTime * 60 * 1000
+                log.trace "LowLongEnoughCheck: ${lastLowDeltaMillis} >= ${minOffTimeMillis}"
 
-            if (lastLowDeltaMillis >= minOffTimeMillis) { // Power has been low for long enough, end the cycle
-                log.trace "Still running and low time is is longer than minimumOffTime"
-                endCycle()
-            } else { // Has a low time but isn't done yet, re-schedule another check for the future
-                def reSchedTime = (minOffTimeMillis - lastLowDeltaMillis) / 1000
-                log.trace "Re-Scheduling checkIfDone in ${reSchedTime} seconds"
-                checkDoneIn(reSchedTime);
-            }
-        } else { // No low power event
-            def lastUpdateDeltaMillis = (now() - atomicState.latestUpdate)
-            def maxGapMillis = maximumUpdateGap * 60 * 1000
-            log.trace "RecentUpdateCheck: ${lastUpdateDeltaMillis} >= ${maxGapMillis}"
+                if (lastLowDeltaMillis >= minOffTimeMillis) { // Power has been low for long enough, end the cycle
+                    log.trace "Still running and low time is is longer than minimumOffTime"
+                    endCycle()
+                    stateMap.clear()
+                } else { // Has a low time but isn't done yet, re-schedule another check for the future
+                    def reSchedTime = (minOffTimeMillis - lastLowDeltaMillis) / 1000
+                    log.trace "Re-Scheduling checkIfDone in ${reSchedTime} seconds"
+                    checkDoneIn(reSchedTime);
+                }
+            } else { // No low power event
+                def lastUpdateDeltaMillis = (now() - stateMap.latestUpdate)
+                def maxGapMillis = maximumUpdateGap * 60 * 1000
+                log.trace "RecentUpdateCheck: ${lastUpdateDeltaMillis} >= ${maxGapMillis}"
 
-        	if (lastUpdateDeltaMillis < maxGapMillis) { // it has been too long since an update
-                log.trace "It has been too long since the last power update, assume cycle is done"
-                endCycle()
+                if (lastUpdateDeltaMillis < maxGapMillis) { // it has been too long since an update
+                    log.trace "It has been too long since the last power update, assume cycle is done"
+                    endCycle()
+                    stateMap.clear()
+                }
             }
         }
+    } finally {
+    	atomicState.stateMap = stateMap
     }
 }
 
@@ -162,12 +182,7 @@ def endCycle() {
     }               
     if (speech) { 
         speech.speak(message) 
-    } 
-
-    atomicState.latestPower = null
-    atomicState.latestUpdate = null
-    atomicState.startedAt = null
-    atomicState.lastLowTime = null
+    }
 }
 
 private hideOptionsSection() {
