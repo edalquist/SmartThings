@@ -17,6 +17,7 @@
  */
  
 import groovy.time.* 
+import java.util.concurrent.TimeUnit
  
 definition(
     name: "Laundry Monitor",
@@ -29,109 +30,145 @@ definition(
 
 
 preferences {
-	section("Tell me when this washer/dryer has stopped..."){
-		input "sensor1", "capability.powerMeter"
-	}
+    section("Tell me when this washer/dryer has stopped..."){
+        input "sensor1", "capability.powerMeter"
+    }
     
     section("Notifications") {
-		input "sendPushMessage", "bool", title: "Push Notifications?"
-		input "phone", "phone", title: "Send a text message?", required: false
+        input "sendPushMessage", "bool", title: "Push Notifications?"
+        input "phone", "phone", title: "Send a text message?", required: false
             paragraph "For multiple SMS recipients, separate phone numbers with a semicolon(;)"      
-	}
+    }
 
-	section("System Variables"){
-    	input "minimumWattage", "decimal", title: "Minimum running wattage", required: false, defaultValue: 50
-        input "minimumOffTime", "decimal", title: "Minimum amount of below wattage time to trigger off (secs)", required: false, defaultValue: 60
+    section("System Variables"){
+        input "minimumWattage", "decimal", title: "Minimum running wattage", required: false, defaultValue: 50
+        input "minimumOffTime", "decimal", title: "Minimum amount of below wattage time to trigger off (minutes)", required: false, defaultValue: 1
+        input "maximumUpdateGap", "decimal", title: "Maximum time between power usage updates before ending cycle (minutes)", required: false, defaultValue: 10
         input "message", "text", title: "Notification message", description: "Laundry is done!", required: true
-	}
-	
-	section ("Additionally", hidden: hideOptionsSection(), hideable: true) {
+    }
+    
+    section ("Additionally", hidden: hideOptionsSection(), hideable: true) {
         input "switches", "capability.switch", title: "Turn on these switches?", required:false, multiple:true
-	    input "speech", "capability.speechSynthesis", title:"Speak message via: ", multiple: true, required: false
-	}
+        input "speech", "capability.speechSynthesis", title:"Speak message via: ", multiple: true, required: false
+    }
 }
 
 def installed() {
-	log.debug "Installed with settings: ${settings}"
+    log.debug "Installed with settings: ${settings}"
 
-	initialize()
+    initialize()
 }
 
 def updated() {
-	log.debug "Updated with settings: ${settings}"
+    log.debug "Updated with settings: ${settings}"
 
-	unsubscribe()
-	initialize()
+    unsubscribe()
+    initialize()
 }
 
 def initialize() {
-	subscribe(sensor1, "power", powerInputHandler)
+    subscribe(sensor1, "power", powerInputHandler)
+    runEvery5Minutes(checkIfDone);
+}
+
+// Run in seems to actually run sooner than requested so we skew the delay by a few seconds
+def checkDoneIn(delayInSeconds) {
+	runIn(delayInSeconds + 2, checkIfDone);
 }
 
 def powerInputHandler(evt) {
-	def latestPower = sensor1.currentValue("power")
-    log.trace "Power: ${latestPower}W, State: ${atomicState}"
-    
-    if (atomicState.startedAt == null && latestPower >= minimumWattage) {
-	    // If not running and current power usage is greater than the minimum
-		atomicState.startedAt = now()
-        atomicState.lastLowTime = null
-        log.info "Starting Cycle: ${message}"
-        log.trace "Starting Cycle: ${atomicState}"
-    } else if (atomicState.startedAt != null) {
-    	if (latestPower < minimumWattage) {
-        	if (atomicState.lastLowTime == null) {
-        		// If power is below minimum for the first time in "minimumOffTime" record the current time
-                atomicState.lastLowTime = now()
-                // Schedule callback to check if the power is still low
-                runIn(minimumOffTime, checkIfDone);
+    atomicState.latestPower = sensor1.currentValue("power")
+    atomicState.latestUpdate = now()
+    log.trace "State: ${atomicState}"
 
-	            log.trace "Hit low-power for first time after high-power: ${atomicState}"
-            }
-        } else {
-        	if (atomicState.lastLowTime != null) {
-            	log.trace "Hit high-power for first time after low-power: ${atomicState}"
-            }
+    if (atomicState.startedAt == null) { // Not currently Running
+        if (atomicState.latestPower >= minimumWattage) { // Power is above minimum
+            // Start the cycle!
+            atomicState.startedAt = atomicState.latestUpdate
+            atomicState.lastLowTime = null
+            log.info "Starting Cycle: ${message}"
+            log.trace "Starting Cycle: ${atomicState}"
+        }
+        // else, power is below minimum, we can just ignore it
+    } else { // Currently Running!
+        if (atomicState.latestPower < minimumWattage) { // Power is below minimum, maybe done?
+            if (atomicState.lastLowTime == null) { // Haven't seen a low since the last high
+                // Record the time the low power was observed
+                atomicState.lastLowTime = atomicState.latestUpdate
+                log.trace "Hit low-power for first time after high-power: ${atomicState}"
 
-        	// Power usage is above minimum, clear lastLowTime
-        	atomicState.lastLowTime = null;
+                // Schedule callback for minimumOffTime from now to check if power has been low for long enough
+                checkDoneIn(TimeUnit.MINUTES.toSeconds(minimumOffTime));
+            }
+        } else if (atomicState.lastLowTime != null) { // Power is above minimum, reset any pending low atomicState
+            log.trace "Hit high-power for first time after low-power: ${atomicState}"
+
+            // Power usage is above minimum, clear lastLowTime
+            atomicState.lastLowTime = null
         }
     }
 }
 
-// Called after minimumOffTime has passed to see if lastLowTime is still set AND if it is old enough
+// Called every 5min and after a min power event is detected
 def checkIfDone() {
-	log.trace "CheckIfDone: ${atomicState}"
+    log.trace "CheckIfDone: ${atomicState}"
 
-	if (atomicState.lastLowTime != null && (now() - atomicState.lastLowTime) > (minimumOffTime * 1000)) {
-		log.trace "Still running and low time is is longer than minimumOffTime"  
-        log.info "Ending Cycle: ${message}"
-        
-        atomicState.startedAt = null;
-        atomicState.lastLowTime = null;
-        
-        if (phone) {
-            if ( phone.indexOf(";") > 1){
-                def phones = phone.split(";")
-                for ( def i = 0; i < phones.size(); i++) {
-                    sendSms(phones[i], message)
-                }
-            } else {
-                sendSms(phone, message)
+    if (atomicState.startedAt != null) { // Currently Running
+        if (atomicState.lastLowTime != null) {  // there is a low power event
+            def lastLowDeltaMillis = (now() - atomicState.lastLowTime)
+            def minOffTimeMillis = TimeUnit.MINUTES.toMillis(minimumOffTime)
+            log.trace "LowLongEnoughCheck: ${lastLowDeltaMillis} >= ${minOffTimeMillis}"
+
+            if (lastLowDeltaMillis >= minOffTimeMillis) { // Power has been low for long enough, end the cycle
+                log.trace "Still running and low time is is longer than minimumOffTime"
+                endCycle()
+            } else { // Has a low time but isn't done yet, re-schedule another check for the future
+                def reSchedTime = TimeUnit.MILLISECONDS.toSeconds(minOffTimeMillis - lastLowDeltaMillis)
+                log.trace "Re-Scheduling checkIfDone in ${reSchedTime} seconds"
+                checkDoneIn(reSchedTime);
+            }
+        } else { // No low power event
+            def lastUpdateDeltaMillis = (now() - atomicState.latestUpdate)
+            def maxGapMillis = TimeUnit.MINUTES.toMillis(maximumUpdateGap)
+            log.trace "RecentUpdateCheck: ${lastUpdateDeltaMillis} >= ${maxGapMillis}"
+
+        	if (lastUpdateDeltaMillis < maxGapMillis) { // it has been too long since an update
+                log.trace "It has been too long since the last power update, assume cycle is done"
+                endCycle()
             }
         }
-
-        if (sendPushMessage) {
-            sendPush message
-        }
-
-        if (switches) {
-            switches*.on()
-        }               
-        if (speech) { 
-            speech.speak(message) 
-        }  
     }
+}
+
+def endCycle() {
+    log.info "Ending Cycle: ${message}"
+
+    if (phone) {
+        if ( phone.indexOf(";") > 1){
+            def phones = phone.split(";")
+            for ( def i = 0; i < phones.size(); i++) {
+                sendSms(phones[i], message)
+            }
+        } else {
+            sendSms(phone, message)
+        }
+    }
+
+    if (sendPushMessage) {
+        sendPush message
+    }
+
+    if (switches) {
+        switches*.on()
+    }               
+    if (speech) { 
+        speech.speak(message) 
+    } 
+
+    atomicState.latestPower = null
+    atomicState.latestUpdate = null
+    atomicState.startedAt = null
+    atomicState.lastLowTime = null
 }
 
 private hideOptionsSection() {
