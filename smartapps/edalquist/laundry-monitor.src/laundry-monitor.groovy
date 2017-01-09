@@ -72,19 +72,19 @@ def initialize() {
 
 // Run in seems to actually run sooner than requested so we skew the delay by a few seconds
 def checkDoneIn(delayInSeconds) {
-	runIn(delayInSeconds + 2, checkIfDone);
+    runIn(delayInSeconds + 2, checkIfDone);
 }
 
 def getStateMap(atSt) {
-	def stateMap = atSt.stateMap
+    def stateMap = atSt.stateMap
     if (stateMap == null) {
-	    stateMap = [:]
+        stateMap = [:]
     }
     return stateMap
 }
 
 def powerInputHandler(evt) {
-	def stateMap = getStateMap(atomicState)
+    def stateMap = getStateMap(atomicState)
     try {
         stateMap.latestPower = sensor1.currentValue("power")
         stateMap.latestUpdate = now()
@@ -117,13 +117,13 @@ def powerInputHandler(evt) {
             }
         }
     } finally {
-    	atomicState.stateMap = stateMap
+        atomicState.stateMap = stateMap
     }
 }
 
 // Called every 5min and after a min power event is detected
 def checkIfDone() {
-	def stateMap = getStateMap(atomicState)
+    def stateMap = getStateMap(atomicState)
     try {
         log.trace "CheckIfDone: ${stateMap}"
 
@@ -155,7 +155,7 @@ def checkIfDone() {
             }
         }
     } finally {
-    	atomicState.stateMap = stateMap
+        atomicState.stateMap = stateMap
     }
 }
 
